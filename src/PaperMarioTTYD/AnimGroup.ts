@@ -4,8 +4,8 @@ import { readString, nArray, assert, assertExists, align } from "../util";
 import { GX_VtxDesc, GX_VtxAttrFmt, LoadedVertexLayout, compileVtxLoader, LoadedVertexData, VtxLoader, GX_Array } from "../gx/gx_displaylist";
 import * as GX from "../gx/gx_enum";
 import { mat4, ReadonlyMat4, vec3 } from "gl-matrix";
-import { GfxDevice, GfxBuffer, GfxBufferUsage, GfxBufferFrequencyHint, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxHostAccessPass, GfxSampler } from "../gfx/platform/GfxPlatform";
-import { GfxRenderInstManager, GfxRendererLayer, setSortKeyLayer, setSortKeyBias, setSortKeyDepth } from "../gfx/render/GfxRenderer";
+import { GfxDevice, GfxBuffer, GfxBufferUsage, GfxBufferFrequencyHint, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxSampler } from "../gfx/platform/GfxPlatform";
+import { GfxRenderInstManager, GfxRendererLayer, setSortKeyLayer, setSortKeyBias, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager";
 import * as TPL from "./tpl";
 import { BTIData, TEX1_SamplerSub } from "../Common/JSYSTEM/JUTTexture";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
@@ -526,7 +526,7 @@ function translateSampler(device: GfxDevice, cache: GfxRenderCache, sampler: TEX
     const [minFilter, mipFilter] = translateTexFilterGfx(sampler.minFilter);
     const [magFilter]            = translateTexFilterGfx(sampler.magFilter);
 
-    const gfxSampler = cache.createSampler(device, {
+    const gfxSampler = cache.createSampler({
         wrapS: translateWrapModeGfx(wrapS),
         wrapT: translateWrapModeGfx(wrapT),
         minFilter, mipFilter, magFilter,
@@ -557,21 +557,19 @@ class AnimGroupInstance_Shape {
             vtxByteCount += this.shape.draws[i].loadedVertexData.vertexBuffers[0].byteLength;
             idxByteCount += this.shape.draws[i].loadedVertexData.indexData.byteLength;
         }
-        this.vtxBuffer = device.createBuffer(align(vtxByteCount, 4) / 4, GfxBufferUsage.VERTEX, this.animGroupData.animGroup.hasAnyVtxAnm ? GfxBufferFrequencyHint.DYNAMIC : GfxBufferFrequencyHint.STATIC);
-        this.idxBuffer = device.createBuffer(align(idxByteCount, 4) / 4, GfxBufferUsage.INDEX, GfxBufferFrequencyHint.STATIC);
+        this.vtxBuffer = device.createBuffer(align(vtxByteCount, 4) / 4, GfxBufferUsage.Vertex, this.animGroupData.animGroup.hasAnyVtxAnm ? GfxBufferFrequencyHint.Dynamic : GfxBufferFrequencyHint.Static);
+        this.idxBuffer = device.createBuffer(align(idxByteCount, 4) / 4, GfxBufferUsage.Index, GfxBufferFrequencyHint.Static);
 
-        const hostAccessPass = device.createHostAccessPass();
         let vtxByteOffset = 0, idxByteOffset = 0;
         this.shapeHelper = this.shape.draws.map((draw, i) => {
             const vertexBuffer: GfxVertexBufferDescriptor = { buffer: this.vtxBuffer, byteOffset: vtxByteOffset };
             const indexBuffer: GfxIndexBufferDescriptor = { buffer: this.idxBuffer, byteOffset: idxByteOffset };
-            hostAccessPass.uploadBufferData(this.vtxBuffer, vtxByteOffset, new Uint8Array(draw.loadedVertexData.vertexBuffers[0]));
-            hostAccessPass.uploadBufferData(this.idxBuffer, idxByteOffset, new Uint8Array(draw.loadedVertexData.indexData));
+            device.uploadBufferData(this.vtxBuffer, vtxByteOffset, new Uint8Array(draw.loadedVertexData.vertexBuffers[0]));
+            device.uploadBufferData(this.idxBuffer, idxByteOffset, new Uint8Array(draw.loadedVertexData.indexData));
             vtxByteOffset += draw.loadedVertexData.vertexBuffers[0].byteLength;
             idxByteOffset += draw.loadedVertexData.indexData.byteLength;
             return new GXShapeHelperGfx(device, cache, [vertexBuffer], indexBuffer, draw.loadedVertexLayout, draw.loadedVertexData);
         });
-        device.submitPass(hostAccessPass);
 
         this.materialHelper = this.shape.draws.map((draw, idx) => {
             const mb = new GXMaterialBuilder();
@@ -610,7 +608,7 @@ class AnimGroupInstance_Shape {
         });
     }
 
-    public runAndUploadVertexData(animVtxPos: ArrayBufferSlice, animVtxNrm: ArrayBufferSlice, hostAccessPass: GfxHostAccessPass): void {
+    public runAndUploadVertexData(device: GfxDevice, animVtxPos: ArrayBufferSlice, animVtxNrm: ArrayBufferSlice): void {
         const vtxArrays = this.shape.vtxArrays.slice();
         vtxArrays[GX.Attr.POS].buffer = animVtxPos;
         vtxArrays[GX.Attr.NRM].buffer = animVtxNrm;
@@ -619,7 +617,7 @@ class AnimGroupInstance_Shape {
         let vtxByteOffset = 0;
         for (let i = 0; i < this.shape.draws.length; i++) {
             const draw = this.shape.draws[i];
-            hostAccessPass.uploadBufferData(this.vtxBuffer, vtxByteOffset, new Uint8Array(draw.loadedVertexData.vertexBuffers[0]));
+            device.uploadBufferData(this.vtxBuffer, vtxByteOffset, new Uint8Array(draw.loadedVertexData.vertexBuffers[0]));
             vtxByteOffset += draw.loadedVertexData.vertexBuffers[0].byteLength;
         }
     }
@@ -947,9 +945,7 @@ export class AnimGroupInstance {
                 const shape = this.shapes[group.shapeIdx];
 
                 if (this.anim !== null && this.anim.hasVtxAnm) {
-                    const hostAccessPass = device.createHostAccessPass();
-                    shape.runAndUploadVertexData(this.animVtxPos!, this.animVtxNrm!, hostAccessPass);
-                    device.submitPass(hostAccessPass);
+                    shape.runAndUploadVertexData(device, this.animVtxPos!, this.animVtxNrm!);
                 }
 
                 shape.prepareToRender(device, renderInstManager, viewerInput, this.animTexMtx, m);
@@ -979,9 +975,10 @@ export class AnimGroupInstance {
 export class AnimGroupDataCache {
     public animGroupDataCache = new Map<string, AnimGroupData>();
     public promiseCache = new Map<string, Promise<AnimGroupData>>();
-    private cache = new GfxRenderCache();
+    private cache: GfxRenderCache;
 
     constructor(private device: GfxDevice, private dataFetcher: DataFetcher, private pathBase: string) {
+        this.cache = new GfxRenderCache(device);
     }
 
     private async requestAnimGroupDataInternal(ag: string, abortedCallback: AbortedCallback): Promise<AnimGroupData> {
@@ -1013,7 +1010,7 @@ export class AnimGroupDataCache {
     }
 
     public destroy(device: GfxDevice): void {
-        this.cache.destroy(device);
+        this.cache.destroy();
         for (const animGroupData of this.animGroupDataCache.values())
             animGroupData.destroy(device);
     }

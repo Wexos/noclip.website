@@ -7,7 +7,7 @@ import { mat4, vec3 } from "gl-matrix";
 import { fillMatrix4x3, fillMatrix4x2, fillVec3v } from "../gfx/helpers/UniformBufferHelpers";
 import { TextureMapping } from "../TextureHolder";
 import { assert, hexzero } from "../util";
-import { GfxRenderInstManager, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderer";
+import { GfxRenderInstManager, GfxRendererLayer, makeSortKey, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 import { reverseDepthForCompareMode } from "../gfx/helpers/ReversedDepthHelpers";
 import { GSAlphaCompareMode, GSAlphaFailMode, GSTextureFunction, GSDepthCompareMode, GSTextureFilter, psmToString, GSWrapMode } from "../Common/PS2/GS";
@@ -15,6 +15,8 @@ import { setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorH
 import { AABB } from "../Geometry";
 import { clamp, computeModelMatrixR, setMatrixTranslation, transformVec3Mat4w1 } from "../MathHelpers";
 import { getPointHermite } from "../Spline";
+import { convertToCanvas } from "../gfx/helpers/TextureConversionHelpers";
+import ArrayBufferSlice from "../ArrayBufferSlice";
 
 export class FFXProgram extends DeviceProgram {
     public static a_Position = 0;
@@ -148,8 +150,8 @@ export class LevelModelData {
     public inputState: GfxInputState;
 
     constructor(device: GfxDevice, cache: GfxRenderCache, public model: BIN.LevelModel) {
-        this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.VERTEX, this.model.vertexData.buffer as ArrayBuffer);
-        this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.INDEX, this.model.indexData.buffer as ArrayBuffer);
+        this.vertexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Vertex, this.model.vertexData.buffer);
+        this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, this.model.indexData.buffer);
 
         const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
             { location: FFXProgram.a_Position, bufferIndex: 0, bufferByteOffset: 0 * 4, format: GfxFormat.F32_RGB },
@@ -159,11 +161,11 @@ export class LevelModelData {
         ];
         const VERTEX_STRIDE = 3 + 4 + 2 + 4;
         const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-            { byteStride: VERTEX_STRIDE * 4, frequency: GfxVertexBufferFrequency.PER_VERTEX, },
+            { byteStride: VERTEX_STRIDE * 4, frequency: GfxVertexBufferFrequency.PerVertex, },
         ];
         const indexBufferFormat = GfxFormat.U16_R;
 
-        this.inputLayout = cache.createInputLayout(device, { vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
+        this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
 
         this.inputState = device.createInputState(this.inputLayout, [
             { buffer: this.vertexBuffer, byteOffset: 0, },
@@ -182,37 +184,37 @@ function translateWrapMode(wm: GSWrapMode): GfxWrapMode {
         // region_ modes are handled by modifying the texture, so ignore them here
         case GSWrapMode.REGION_CLAMP:
         case GSWrapMode.CLAMP:
-            return GfxWrapMode.CLAMP;
+            return GfxWrapMode.Clamp;
         case GSWrapMode.REGION_REPEAT:
         case GSWrapMode.REPEAT:
-            return GfxWrapMode.REPEAT;
+            return GfxWrapMode.Repeat;
     }
 }
 
 function translateDepthCompareMode(cmp: GSDepthCompareMode): GfxCompareMode {
     switch (cmp) {
-        case GSDepthCompareMode.NEVER: return GfxCompareMode.NEVER;
-        case GSDepthCompareMode.ALWAYS: return GfxCompareMode.ALWAYS;
+        case GSDepthCompareMode.NEVER: return GfxCompareMode.Never;
+        case GSDepthCompareMode.ALWAYS: return GfxCompareMode.Always;
         // We use a LESS-style depth buffer.
-        case GSDepthCompareMode.GEQUAL: return GfxCompareMode.LEQUAL;
-        case GSDepthCompareMode.GREATER: return GfxCompareMode.LESS;
+        case GSDepthCompareMode.GEQUAL: return GfxCompareMode.LessEqual;
+        case GSDepthCompareMode.GREATER: return GfxCompareMode.Less;
     }
 }
 
 function translateTextureFilter(filter: GSTextureFilter): [GfxTexFilterMode, GfxMipFilterMode] {
     switch (filter) {
         case GSTextureFilter.NEAREST:
-            return [GfxTexFilterMode.POINT, GfxMipFilterMode.NO_MIP];
+            return [GfxTexFilterMode.Point, GfxMipFilterMode.NoMip];
         case GSTextureFilter.LINEAR:
-            return [GfxTexFilterMode.BILINEAR, GfxMipFilterMode.NO_MIP];
+            return [GfxTexFilterMode.Bilinear, GfxMipFilterMode.NoMip];
         case GSTextureFilter.NEAREST_MIPMAP_NEAREST:
-            return [GfxTexFilterMode.POINT, GfxMipFilterMode.NEAREST];
+            return [GfxTexFilterMode.Point, GfxMipFilterMode.Nearest];
         case GSTextureFilter.NEAREST_MIPMAP_LINEAR:
-            return [GfxTexFilterMode.POINT, GfxMipFilterMode.LINEAR];
+            return [GfxTexFilterMode.Point, GfxMipFilterMode.Linear];
         case GSTextureFilter.LINEAR_MIPMAP_NEAREST:
-            return [GfxTexFilterMode.BILINEAR, GfxMipFilterMode.NEAREST];
+            return [GfxTexFilterMode.Bilinear, GfxMipFilterMode.Nearest];
         case GSTextureFilter.LINEAR_MIPMAP_LINEAR:
-            return [GfxTexFilterMode.BILINEAR, GfxMipFilterMode.LINEAR];
+            return [GfxTexFilterMode.Bilinear, GfxMipFilterMode.Linear];
         default: throw new Error();
     }
 }
@@ -235,30 +237,30 @@ export class DrawCallInstance {
         this.megaStateFlags = {
             depthCompare: reverseDepthForCompareMode(translateDepthCompareMode(ztst)),
             depthWrite: gsConfiguration.depthWrite,
-            cullMode: gsConfiguration.cullingEnabled ? GfxCullMode.FRONT : GfxCullMode.NONE,
+            cullMode: gsConfiguration.cullingEnabled ? GfxCullMode.Front : GfxCullMode.None,
         };
 
         if ((gsConfiguration.prim & 0x40) !== 0 && gsConfiguration.alpha_data0 !== 0) {
             if (gsConfiguration.alpha_data0 === 0x44) {
                 setAttachmentStateSimple(this.megaStateFlags, {
-                    blendMode: GfxBlendMode.ADD,
-                    blendSrcFactor: GfxBlendFactor.SRC_ALPHA,
-                    blendDstFactor: GfxBlendFactor.ONE_MINUS_SRC_ALPHA,
+                    blendMode: GfxBlendMode.Add,
+                    blendSrcFactor: GfxBlendFactor.SrcAlpha,
+                    blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
                 });
             } else if (gsConfiguration.alpha_data0 === 0x48) {
                 setAttachmentStateSimple(this.megaStateFlags, {
-                    blendMode: GfxBlendMode.ADD,
-                    blendSrcFactor: GfxBlendFactor.SRC_ALPHA,
-                    blendDstFactor: GfxBlendFactor.ONE,
+                    blendMode: GfxBlendMode.Add,
+                    blendSrcFactor: GfxBlendFactor.SrcAlpha,
+                    blendDstFactor: GfxBlendFactor.One,
                 });
             } else {
                 throw `unknown alpha blend setting ${hexzero(gsConfiguration.alpha_data0, 2)}`;
             }
         } else { // alpha blending disabled
             setAttachmentStateSimple(this.megaStateFlags, {
-                blendMode: GfxBlendMode.ADD,
-                blendSrcFactor: GfxBlendFactor.ONE,
-                blendDstFactor: GfxBlendFactor.ZERO,
+                blendMode: GfxBlendMode.Add,
+                blendSrcFactor: GfxBlendFactor.One,
+                blendDstFactor: GfxBlendFactor.Zero,
             });
         }
 
@@ -281,7 +283,7 @@ export class DrawCallInstance {
             const wrapT = translateWrapMode(gsConfiguration.clamp.wmt);
 
             this.textureMappings.push(new TextureMapping());
-            this.textureMappings[0].gfxSampler = cache.createSampler(device, {
+            this.textureMappings[0].gfxSampler = cache.createSampler({
                 minFilter, magFilter, mipFilter,
                 wrapS, wrapT,
                 minLOD: 0, maxLOD: 100,
@@ -303,7 +305,7 @@ export class DrawCallInstance {
             }
         }
 
-        this.gfxProgram = cache.createProgram(device, program);
+        this.gfxProgram = cache.createProgram(program);
     }
 
     public prepareToRender(renderInstManager: GfxRenderInstManager, modelViewMatrix: mat4, params: vec3, textureRemaps: GfxTexture[]): void {
@@ -517,12 +519,11 @@ export class TextureData {
     constructor(device: GfxDevice, public data: BIN.Texture) {
         const gfxTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.U8_RGBA_NORM, data.width, data.height, 1));
         device.setResourceName(gfxTexture, data.name);
-        const hostAccessPass = device.createHostAccessPass();
-        hostAccessPass.uploadTextureData(gfxTexture, 0, [data.pixels]);
-        device.submitPass(hostAccessPass);
+
+        device.uploadTextureData(gfxTexture, 0, [data.pixels]);
         this.gfxTexture = gfxTexture;
 
-        this.viewerTexture = textureToCanvas(data, data.name, data.pixels);
+        this.viewerTexture = textureToCanvas(data);
     }
 
     public destroy(device: GfxDevice): void {
@@ -530,22 +531,13 @@ export class TextureData {
     }
 }
 
-function textureToCanvas(texture: BIN.Texture, name: string, pixels: Uint8Array): Viewer.Texture {
-    const canvas = document.createElement("canvas");
-    const width = texture.width;
-    const height = texture.height;
-    canvas.width = width;
-    canvas.height = height;
-    canvas.title = name;
+function textureToCanvas(texture: BIN.Texture): Viewer.Texture {
+    const canvas = convertToCanvas(ArrayBufferSlice.fromView(texture.pixels), texture.width, texture.height);
+    canvas.title = texture.name;
 
-    const ctx = canvas.getContext("2d")!;
-    const imgData = ctx.createImageData(canvas.width, canvas.height);
-    imgData.data.set(pixels);
-    ctx.putImageData(imgData, 0, 0);
     const surfaces = [canvas];
-
     const extraInfo = new Map<string, string>();
     extraInfo.set('Format', psmToString(texture.tex0.psm));
 
-    return { name: name, surfaces, extraInfo };
+    return { name: texture.name, surfaces, extraInfo };
 }

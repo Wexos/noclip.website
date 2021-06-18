@@ -4,7 +4,7 @@ import { GfxDevice, GfxInputState, GfxInputLayout, GfxFormat, GfxVertexAttribute
 import ArrayBufferSlice from "../ArrayBufferSlice";
 import { coalesceBuffer, GfxCoalescedBuffer } from "../gfx/helpers/BufferHelpers";
 import { convertToTriangleIndexBuffer, GfxTopology, filterDegenerateTriangleIndexBuffer } from "../gfx/helpers/TopologyHelpers";
-import { makeSortKey, GfxRendererLayer, setSortKeyDepth, GfxRenderInstManager } from "../gfx/render/GfxRenderer";
+import { makeSortKey, GfxRendererLayer, setSortKeyDepth, GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager";
 import { DeviceProgram } from "../Program";
 import { DDSTextureHolder } from "./dds";
 import { nArray, assert, assertExists } from "../util";
@@ -129,10 +129,10 @@ class BatchData {
         }
 
         const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
-            { byteStride: flverInputState.vertexSize, frequency: GfxVertexBufferFrequency.PER_VERTEX, },
+            { byteStride: flverInputState.vertexSize, frequency: GfxVertexBufferFrequency.PerVertex, },
         ];
 
-        this.inputLayout = cache.createInputLayout(device, {
+        this.inputLayout = cache.createInputLayout({
             indexBufferFormat: GfxFormat.U16_R,
             vertexAttributeDescriptors,
             vertexBufferDescriptors,
@@ -166,7 +166,7 @@ export class FLVERData {
             vertexBufferDatas.push(flver.inputStates[i].vertexData);
             flver.inputStates[i].vertexData = null as unknown as ArrayBufferSlice;
         }
-        const vertexBuffers = coalesceBuffer(device, GfxBufferUsage.VERTEX, vertexBufferDatas);
+        const vertexBuffers = coalesceBuffer(device, GfxBufferUsage.Vertex, vertexBufferDatas);
         this.vertexBuffer = vertexBuffers[0].buffer;
 
         const triangleIndexCounts: number[] = [];
@@ -183,7 +183,7 @@ export class FLVERData {
             }
         }
 
-        const indexBuffers = coalesceBuffer(device, GfxBufferUsage.INDEX, indexBufferDatas);
+        const indexBuffers = coalesceBuffer(device, GfxBufferUsage.Index, indexBufferDatas);
         this.indexBuffer = indexBuffers[0].buffer;
 
         for (let i = 0; i < flver.batches.length; i++) {
@@ -194,13 +194,13 @@ export class FLVERData {
         }
 
         this.gfxSampler = device.createSampler({
-            minFilter: GfxTexFilterMode.BILINEAR,
-            magFilter: GfxTexFilterMode.BILINEAR,
-            mipFilter: GfxMipFilterMode.LINEAR,
+            minFilter: GfxTexFilterMode.Bilinear,
+            magFilter: GfxTexFilterMode.Bilinear,
+            mipFilter: GfxMipFilterMode.Linear,
             minLOD: 0,
             maxLOD: 100,
-            wrapS: GfxWrapMode.REPEAT,
-            wrapT: GfxWrapMode.REPEAT,
+            wrapS: GfxWrapMode.Repeat,
+            wrapT: GfxWrapMode.Repeat,
         });
     }
 
@@ -675,9 +675,9 @@ class BatchInstance {
                 depthWrite: false,
             };
             setAttachmentStateSimple(this.megaState, {
-                blendMode: GfxBlendMode.ADD,
-                blendSrcFactor: GfxBlendFactor.SRC_ALPHA,
-                blendDstFactor: GfxBlendFactor.ONE_MINUS_SRC_ALPHA,
+                blendMode: GfxBlendMode.Add,
+                blendSrcFactor: GfxBlendFactor.SrcAlpha,
+                blendDstFactor: GfxBlendFactor.OneMinusSrcAlpha,
             });
             isTranslucent = true;
         } else if (blendMode === BlendMode.Add) {
@@ -685,9 +685,9 @@ class BatchInstance {
                 depthWrite: false,
             };
             setAttachmentStateSimple(this.megaState, {
-                blendMode: GfxBlendMode.ADD,
-                blendSrcFactor: GfxBlendFactor.SRC_ALPHA,
-                blendDstFactor: GfxBlendFactor.ONE,
+                blendMode: GfxBlendMode.Add,
+                blendSrcFactor: GfxBlendFactor.SrcAlpha,
+                blendDstFactor: GfxBlendFactor.One,
             });
             isTranslucent = true;
         } else if (blendMode === BlendMode.TexEdge) {
@@ -721,7 +721,7 @@ class BatchInstance {
         }
 
         this.program.ensurePreprocessed(device.queryVendorInfo());
-        this.gfxProgram = cache.createProgram(device, this.program);
+        this.gfxProgram = cache.createProgram(this.program);
 
         const layer = isTranslucent ? GfxRendererLayer.TRANSLUCENT : GfxRendererLayer.OPAQUE;
         this.sortKey = makeSortKey(layer, 0);
@@ -763,7 +763,7 @@ class BatchInstance {
 
             const renderInst = renderInstManager.newRenderInst();
             if (primitive.cullMode)
-                renderInst.getMegaStateFlags().cullMode = GfxCullMode.BACK;
+                renderInst.getMegaStateFlags().cullMode = GfxCullMode.Back;
             renderInst.drawIndexes(this.batchData.primitiveIndexCounts[j], this.batchData.primitiveIndexStarts[j]);
             renderInst.sortKey = setSortKeyDepth(this.sortKey, depth);
             renderInstManager.submitRenderInst(renderInst);

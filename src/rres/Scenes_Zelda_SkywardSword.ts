@@ -10,17 +10,17 @@ import * as U8 from './u8';
 import { assert, readString, assertExists, hexzero } from '../util';
 import ArrayBufferSlice from '../ArrayBufferSlice';
 import { RRESTextureHolder, MDL0Model, MDL0ModelInstance } from './render';
-import { TextureOverride } from '../TextureHolder';
 import { EFB_WIDTH, EFB_HEIGHT, GXMaterialHacks } from '../gx/gx_material';
 import { mat4, quat } from 'gl-matrix';
 import AnimationController from '../AnimationController';
 import { GXRenderHelperGfx, fillSceneParamsDataOnTemplate } from '../gx/gx_render';
-import { GfxDevice, GfxRenderPass, GfxHostAccessPass, GfxTexture, GfxFormat, makeTextureDescriptor2D } from '../gfx/platform/GfxPlatform';
-import { executeOnPass, hasAnyVisible, GfxRendererLayer } from '../gfx/render/GfxRenderer';
-import { BasicRenderTarget, ColorTexture, standardFullClearRenderPassDescriptor, depthClearRenderPassDescriptor, noClearRenderPassDescriptor } from '../gfx/helpers/RenderTargetHelpers';
+import { GfxDevice, GfxTexture, GfxFormat, makeTextureDescriptor2D } from '../gfx/platform/GfxPlatform';
+import { executeOnPass, hasAnyVisible, GfxRendererLayer } from '../gfx/render/GfxRenderInstManager';
+import { makeBackbufferDescSimple, pushAntialiasingPostProcessPass, standardFullClearRenderPassDescriptor } from '../gfx/helpers/RenderGraphHelpers';
 import { ColorKind } from '../gx/gx_render';
 import { SceneContext } from '../SceneBase';
 import { colorNewCopy, White } from '../Color';
+import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph';
 
 const materialHacks: GXMaterialHacks = {
     lightingFudge: (p) => `vec4((0.5 * ${p.matSource}).rgb, 1.0)`,
@@ -146,8 +146,6 @@ class ZSSTextureHolder extends RRESTextureHolder {
 }
 
 class SkywardSwordRenderer implements Viewer.SceneGfx {
-    public mainRenderTarget = new BasicRenderTarget();
-    public opaqueSceneTexture = new ColorTexture();
     public textureHolder: RRESTextureHolder;
     public animationController: AnimationController;
     private stageRRES: BRRES.RRES;
@@ -172,10 +170,11 @@ class SkywardSwordRenderer implements Viewer.SceneGfx {
         const systemRRES = BRRES.parse(systemArchive.findFileData('g3d/model.brres')!);
         this.textureHolder.addRRESTextures(device, systemRRES);
 
+        this.textureHolder.setTextureOverride('DummyWater', { gfxTexture: null, lateBinding: 'opaque-scene-texture', width: EFB_WIDTH, height: EFB_HEIGHT, flipY: true })
         // Override the "Add" textures with a black texture to prevent things from being overly bright.
         this.blackTexture = device.createTexture(makeTextureDescriptor2D(GfxFormat.U8_RGBA_NORM, 1, 1, 1));
-        const hostAccessPass = device.createHostAccessPass();
-        hostAccessPass.uploadTextureData(this.blackTexture, 0, [new Uint8Array([0, 0, 0, 0])]);
+
+        device.uploadTextureData(this.blackTexture, 0, [new Uint8Array([0, 0, 0, 0])]);
         this.textureHolder.setTextureOverride('LmChaAdd', { gfxTexture: this.blackTexture, width: 1, height: 1, flipY: false });
         this.textureHolder.setTextureOverride('LmBGAdd', { gfxTexture: this.blackTexture, width: 1, height: 1, flipY: false });
 
@@ -305,58 +304,75 @@ class SkywardSwordRenderer implements Viewer.SceneGfx {
 
     public destroy(device: GfxDevice): void {
         this.textureHolder.destroy(device);
-        this.renderHelper.destroy(device);
+        this.renderHelper.destroy();
         this.modelCache.destroy(device);
-        this.mainRenderTarget.destroy(device);
-        this.opaqueSceneTexture.destroy(device);
         for (let i = 0; i < this.modelInstances.length; i++)
             this.modelInstances[i].destroy(device);
         device.destroyTexture(this.blackTexture);
     }
 
-    private prepareToRender(device: GfxDevice, hostAccessPass: GfxHostAccessPass, viewerInput: Viewer.ViewerRenderInput): void {
+    private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
         this.animationController.setTimeInMilliseconds(viewerInput.time);
 
         const template = this.renderHelper.pushTemplateRenderInst();
         fillSceneParamsDataOnTemplate(template, viewerInput);
         for (let i = 0; i < this.modelInstances.length; i++)
             this.modelInstances[i].prepareToRender(device, this.renderHelper.renderInstManager, viewerInput);
-        this.renderHelper.prepareToRender(device, hostAccessPass);
+        this.renderHelper.prepareToRender();
         this.renderHelper.renderInstManager.popTemplateRenderInst();
     }
 
-    public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): GfxRenderPass {
-        const hostAccessPass = device.createHostAccessPass();
-        this.prepareToRender(device, hostAccessPass, viewerInput);
-        device.submitPass(hostAccessPass);
+    public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput) {
+        const renderInstManager = this.renderHelper.renderInstManager;
+        const builder = this.renderHelper.renderGraph.newGraphBuilder();
 
-        this.mainRenderTarget.setParameters(device, viewerInput.backbufferWidth, viewerInput.backbufferHeight);
-        this.opaqueSceneTexture.setParameters(device, viewerInput.backbufferWidth, viewerInput.backbufferHeight);
+        const mainColorDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
+        const mainDepthDesc = makeBackbufferDescSimple(GfxrAttachmentSlot.DepthStencil, viewerInput, standardFullClearRenderPassDescriptor);
 
-        const skyboxPassRenderer = this.mainRenderTarget.createRenderPass(device, viewerInput.viewport, standardFullClearRenderPassDescriptor);
-        executeOnPass(this.renderHelper.renderInstManager, device, skyboxPassRenderer, ZSSPass.SKYBOX);
-        device.submitPass(skyboxPassRenderer);
+        const mainColorTargetID = builder.createRenderTargetID(mainColorDesc, 'Main Color');
 
-        const opaquePassRenderer = this.mainRenderTarget.createRenderPass(device, viewerInput.viewport, depthClearRenderPassDescriptor, this.opaqueSceneTexture.gfxTexture);
-        executeOnPass(this.renderHelper.renderInstManager, device, opaquePassRenderer, ZSSPass.OPAQUE);
+        builder.pushPass((pass) => {
+            pass.setDebugName('Skybox');
+            pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+            const skyboxDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Skybox Depth');
+            pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, skyboxDepthTargetID);
+            pass.exec((passRenderer) => {
+                executeOnPass(this.renderHelper.renderInstManager, passRenderer, ZSSPass.SKYBOX);
+            });
+        });
 
-        let lastPassRenderer: GfxRenderPass;
+        const mainDepthTargetID = builder.createRenderTargetID(mainDepthDesc, 'Main Depth');
+        builder.pushPass((pass) => {
+            pass.setDebugName('Main');
+            pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+            pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
+            pass.exec((passRenderer) => {
+                executeOnPass(this.renderHelper.renderInstManager, passRenderer, ZSSPass.OPAQUE);
+            });
+        });
+
         if (hasAnyVisible(this.renderHelper.renderInstManager, ZSSPass.INDIRECT)) {
-            device.submitPass(opaquePassRenderer);
+            builder.pushPass((pass) => {
+                pass.setDebugName('Indirect');
+                pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+                pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
 
-            // IndTex.
-            const textureOverride: TextureOverride = { gfxTexture: this.opaqueSceneTexture.gfxTexture!, width: EFB_WIDTH, height: EFB_HEIGHT, flipY: true };
-            this.textureHolder.setTextureOverride("DummyWater", textureOverride);
+                const opaqueSceneTextureID = builder.resolveRenderTarget(mainColorTargetID);
+                pass.attachResolveTexture(opaqueSceneTextureID);
 
-            const indTexPassRenderer = this.mainRenderTarget.createRenderPass(device, viewerInput.viewport, noClearRenderPassDescriptor);
-            executeOnPass(this.renderHelper.renderInstManager, device, indTexPassRenderer, ZSSPass.INDIRECT);
-            lastPassRenderer = indTexPassRenderer;
-        } else {
-            lastPassRenderer = opaquePassRenderer;
+                pass.exec((passRenderer, scope) => {
+                    renderInstManager.setVisibleByFilterKeyExact(ZSSPass.INDIRECT);
+                    renderInstManager.simpleRenderInstList!.resolveLateSamplerBinding('opaque-scene-texture', { gfxTexture: scope.getResolveTextureForID(opaqueSceneTextureID), gfxSampler: null, lateBinding: null });
+                    renderInstManager.drawOnPassRenderer(passRenderer);
+                });
+            });
         }
+        pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
+        builder.resolveRenderTargetToExternalTexture(mainColorTargetID, viewerInput.onscreenTexture);
 
-        this.renderHelper.renderInstManager.resetRenderInsts();
-        return lastPassRenderer;
+        this.prepareToRender(device, viewerInput);
+        this.renderHelper.renderGraph.execute(builder);
+        renderInstManager.resetRenderInsts();
     }
 
     private spawnObj(device: GfxDevice, obj: BaseObj, modelMatrix: mat4): void {
@@ -686,7 +702,7 @@ const sceneDescs = [
     new SkywardSwordSceneDesc("F102_1", "Outside Ancient Cistern"),
     new SkywardSwordSceneDesc("D101", "Ancient Cistern"),
     new SkywardSwordSceneDesc("B101", "Ancient Cistern (Boss)"),
-    new SkywardSwordSceneDesc("B101_1", "Ancient Cistern (Candle Room)"),
+    new SkywardSwordSceneDesc("B101_1", "Farore's Flame"),
     new SkywardSwordSceneDesc("F103", "Faron Woods (Flooded)"),
     new SkywardSwordSceneDesc("F103_1", "Inside the Great Tree (Flooded)"),
 
@@ -704,7 +720,7 @@ const sceneDescs = [
     new SkywardSwordSceneDesc("D201", "Fire Sanctuary (A)"),
     new SkywardSwordSceneDesc("D201_1", "Fire Sanctuary (B)"),
     new SkywardSwordSceneDesc("B201", "Fire Sanctuary (Boss)"),
-    new SkywardSwordSceneDesc("B201_1", "Fire Sanctuary (Candle Room)"),
+    new SkywardSwordSceneDesc("B201_1", "Din's Flame"),
     new SkywardSwordSceneDesc("F202", "Eldin Volcano (Bokoblin Base)"),
     new SkywardSwordSceneDesc("F202_1", "Volcano F3 (Fire Dragon Dummy 1)"),
     new SkywardSwordSceneDesc("F202_2", "Volcano F3 (Fire Dragon Dummy 2)"),
@@ -738,15 +754,15 @@ const sceneDescs = [
     new SkywardSwordSceneDesc("F303", "Lanayru Caves"),
 
     "Sky Keep",
-    new SkywardSwordSceneDesc("D003_0", "Sky Keep R00 (Enemy)"),
-    new SkywardSwordSceneDesc("D003_1", "Sky Keep R01 (Underground)"),
-    new SkywardSwordSceneDesc("D003_2", "Sky Keep R02 (Lava)"),
-    new SkywardSwordSceneDesc("D003_3", "Sky Keep R03 (Timeshift 2)"),
-    new SkywardSwordSceneDesc("D003_4", "Sky Keep R04 (Timeshift 1)"),
-    new SkywardSwordSceneDesc("D003_5", "Sky Keep R05 (ツタ系)"),
-    new SkywardSwordSceneDesc("D003_6", "Sky Keep R06 (Captain 2)"),
-    new SkywardSwordSceneDesc("D003_7", "Sky Keep R07 (Entrance)"),
-    new SkywardSwordSceneDesc("D003_8", "Sky Keep R08 (Tri Get)"),
+    new SkywardSwordSceneDesc("D003_0", "Bokoblin Gaunlet"),
+    new SkywardSwordSceneDesc("D003_1", "Bomb Flower Puzzle"),
+    new SkywardSwordSceneDesc("D003_2", "Lava River"),
+    new SkywardSwordSceneDesc("D003_3", "Timeshift Puzzle - Caves"),
+    new SkywardSwordSceneDesc("D003_4", "Timeshift Puzzle - Conveyor"),
+    new SkywardSwordSceneDesc("D003_5", "Ancient Cistern Room"),
+    new SkywardSwordSceneDesc("D003_6", "Pirate Fight"),
+    new SkywardSwordSceneDesc("D003_7", "Entrance"),
+    new SkywardSwordSceneDesc("D003_8", "Triforce Get"),
 
     "Sealed Grounds",
     new SkywardSwordSceneDesc("F400", "Behind the Temple"),

@@ -42,6 +42,7 @@ export class JSystemFileReaderHelper {
     public magic: string;
     public size: number;
     public numChunks: number;
+    public subversion: string;
     public offs: number = 0x20;
 
     constructor(public buffer: ArrayBufferSlice) {
@@ -49,6 +50,7 @@ export class JSystemFileReaderHelper {
         this.magic = readString(this.buffer, 0, 8);
         this.size = this.view.getUint32(0x08);
         this.numChunks = this.view.getUint32(0x0C);
+        this.subversion = readString(this.buffer, 0x10, 0x10);
         this.offs = 0x20;
     }
 
@@ -689,7 +691,15 @@ function readMAT3Chunk(buffer: ArrayBufferSlice): MAT3 {
         const index = i;
         const name = nameTable[i];
         const materialEntryIdx = materialEntryTableOffs + (0x014C * remapTable[i]);
+
         const materialMode = view.getUint8(materialEntryIdx + 0x00);
+        // I believe this is a bitfield with three bits:
+        //   0x01: OPA (Opaque)
+        //   0x02: EDG (TexEdge / Masked)
+        //   0x04: XLU (Translucent)
+        // I haven't seen anything but OPA/XLU in the wild.
+        assert(materialMode === 0x01 || materialMode === 0x04);
+
         const cullModeIndex = view.getUint8(materialEntryIdx + 0x01);
         const colorChanNumIndex = view.getUint8(materialEntryIdx + 0x02);
         // const texGenNumIndex = view.getUint8(materialEntryIdx + 0x03);
@@ -910,6 +920,7 @@ function readMAT3Chunk(buffer: ArrayBufferSlice): MAT3 {
             let indTexStage: GX.IndTexStageID = GX.IndTexStageID.STAGE0;
             let indTexFormat: GX.IndTexFormat = GX.IndTexFormat._8;
             let indTexBiasSel: GX.IndTexBiasSel = GX.IndTexBiasSel.NONE;
+            let indTexAlphaSel: GX.IndTexAlphaSel = GX.IndTexAlphaSel.OFF;
             let indTexMatrix: GX.IndTexMtxID = GX.IndTexMtxID.OFF;
             let indTexWrapS: GX.IndTexWrap = GX.IndTexWrap.OFF;
             let indTexWrapT: GX.IndTexWrap = GX.IndTexWrap.OFF;
@@ -926,7 +937,7 @@ function readMAT3Chunk(buffer: ArrayBufferSlice): MAT3 {
                 indTexWrapT = view.getUint8(indTexStageOffs + 0x05);
                 indTexAddPrev = !!view.getUint8(indTexStageOffs + 0x06);
                 indTexUseOrigLOD = !!view.getUint8(indTexStageOffs + 0x07);
-                // bumpAlpha
+                indTexAlphaSel = view.getUint8(indTexStageOffs + 0x08);
             }
 
             const tevStage: GX_Material.TevStage = {
@@ -939,6 +950,7 @@ function readMAT3Chunk(buffer: ArrayBufferSlice): MAT3 {
                 indTexStage,
                 indTexFormat,
                 indTexBiasSel,
+                indTexAlphaSel,
                 indTexMatrix,
                 indTexWrapS,
                 indTexWrapT,
@@ -990,7 +1002,7 @@ function readMAT3Chunk(buffer: ArrayBufferSlice): MAT3 {
         fogBlock.AdjTable.set(fogAdjTable);
         fogBlock.AdjCenter = fogAdjCenter;
 
-        const translucent = !(materialMode & 0x03);
+        const translucent = materialMode === 0x04;
         const colorUpdate = true, alphaUpdate = false;
 
         const ropInfo: GX_Material.RopInfo = {
@@ -1258,6 +1270,7 @@ export class BMD {
     public static parseReader(j3d: JSystemFileReaderHelper): BMD {
         const bmd = new BMD();
 
+        bmd.subversion = j3d.subversion;
         bmd.inf1 = readINF1Chunk(j3d.nextChunk('INF1'));
         bmd.vtx1 = readVTX1Chunk(j3d.nextChunk('VTX1'));
         bmd.evp1 = readEVP1Chunk(j3d.nextChunk('EVP1'));
@@ -1279,6 +1292,7 @@ export class BMD {
         return this.parseReader(j3d);
     }
 
+    public subversion: string;
     public inf1: INF1;
     public vtx1: VTX1;
     public evp1: EVP1;

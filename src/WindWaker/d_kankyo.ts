@@ -14,7 +14,7 @@ import { dKyw_rain_set, ThunderState, ThunderMode, dKyw_wether_move, dKyw_wether
 import { cM_rndF, cLib_addCalc, cLib_addCalc2 } from "./SComponent";
 import { fpc__ProcessName, fopKyM_Create, fpc_bs__Constructor, fGlobals, fpcPf__Register, kankyo_class, cPhs__Status } from "./framework";
 import { ViewerRenderInput } from "../viewer";
-import { GfxRenderInstManager } from "../gfx/render/GfxRenderer";
+import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager";
 import { FogType } from "../gx/gx_enum";
 
 export const enum LightType {
@@ -591,10 +591,10 @@ function GxFogSet_Sub(fog: FogBlock, tevStr: { fogStartZ: number, fogEndZ: numbe
     colorCopy(fog.Color, fogColor);
 
     // Empirically decided.
-    const fogFarPlane = Number.isFinite(camera.frustum.far) ? -camera.frustum.far : 100000;
+    const fogFarPlane = Number.isFinite(camera.far) ? camera.far : 100000;
 
     const type = camera.isOrthographic ? FogType.ORTHO_LIN : FogType.PERSP_LIN;
-    fogBlockSet(fog, type, tevStr.fogStartZ, tevStr.fogEndZ, -camera.frustum.near, fogFarPlane);
+    fogBlockSet(fog, type, tevStr.fogStartZ, tevStr.fogEndZ, camera.near, fogFarPlane);
 }
 
 export function dKy_GxFog_set(envLight: dScnKy_env_light_c, fog: FogBlock, camera: Camera): void {

@@ -10,11 +10,11 @@ import { mat4, ReadonlyMat4 } from 'gl-matrix';
 import { assert, nArray, setBitFlagEnabled } from '../util';
 import AnimationController from '../AnimationController';
 import { DeviceProgram } from '../Program';
-import { GfxDevice, GfxSampler, GfxTexFilterMode, GfxMipFilterMode, GfxBindingLayoutDescriptor, GfxHostAccessPass, GfxProgram, GfxMegaStateDescriptor, GfxCullMode, GfxClipSpaceNearZ } from '../gfx/platform/GfxPlatform';
+import { GfxDevice, GfxSampler, GfxTexFilterMode, GfxMipFilterMode, GfxBindingLayoutDescriptor, GfxProgram, GfxMegaStateDescriptor, GfxCullMode, GfxClipSpaceNearZ } from '../gfx/platform/GfxPlatform';
 import { fillVec4 } from '../gfx/helpers/UniformBufferHelpers';
 import { TextureMapping } from '../TextureHolder';
 import { GfxCoalescedBuffersCombo, GfxBufferCoalescerCombo } from '../gfx/helpers/BufferHelpers';
-import { GfxRenderInstManager, GfxRenderInst, GfxRendererLayer, makeSortKey, makeSortKeyOpaque, setSortKeyDepth } from '../gfx/render/GfxRenderer';
+import { GfxRenderInstManager, GfxRenderInst, GfxRendererLayer, makeSortKey, makeSortKeyOpaque, setSortKeyDepth } from '../gfx/render/GfxRenderInstManager';
 import { Camera, computeViewMatrix, computeViewSpaceDepthFromWorldSpaceAABB } from '../Camera';
 import { AABB } from '../Geometry';
 import { colorCopy, White, Color, colorNewCopy, colorFromRGBA } from '../Color';
@@ -128,7 +128,7 @@ class MaterialInstance {
         this.materialHelper = new GXMaterialHelperGfx(this.material.gxMaterial);
         // Cull mode is set by the node
         this.materialHelper.megaStateFlags.cullMode = undefined;
-        this.materialHelper.cacheProgram(device, cache);
+        this.materialHelper.cacheProgram(cache);
 
         this.gfxSamplers = this.material.samplers.map((sampler) => {
             return MaterialInstance.translateSampler(device, cache, sampler);
@@ -159,10 +159,10 @@ class MaterialInstance {
     }
 
     private static translateSampler(device: GfxDevice, cache: GfxRenderCache, sampler: Sampler): GfxSampler {
-        return cache.createSampler(device, {
-            minFilter: GfxTexFilterMode.BILINEAR,
-            magFilter: GfxTexFilterMode.BILINEAR,
-            mipFilter: GfxMipFilterMode.LINEAR,
+        return cache.createSampler({
+            minFilter: GfxTexFilterMode.Bilinear,
+            magFilter: GfxTexFilterMode.Bilinear,
+            mipFilter: GfxMipFilterMode.Linear,
             wrapS: translateWrapModeGfx(sampler.wrapS),
             wrapT: translateWrapModeGfx(sampler.wrapT),
             maxLOD: 100,
@@ -326,7 +326,7 @@ class NodeInstance {
             //                          (1.0 * (pCam->far + pCam->near) * (1.0 + indexBias)));
 
             const indexBias = this.childIndex * 0.01;
-            const frustum = viewerInput.camera.frustum, far = frustum.far, near = frustum.near;
+            const camera = viewerInput.camera, far = camera.far, near = camera.near;
             const depthBias = 1.0 + (indexBias * -2.0 * far * near) / ((far + near) * (1.0 + indexBias));
 
             if (depthBias !== 1.0) {
@@ -373,7 +373,7 @@ class NodeInstance {
         };
         this.collisionMaterialInstance = new MaterialInstance(device, cache, collisionMaterial);
         this.collisionMaterialInstance.materialHelper.megaStateFlags.polygonOffset = true;
-        this.collisionMaterialInstance.materialHelper.megaStateFlags.cullMode = GfxCullMode.NONE;
+        this.collisionMaterialInstance.materialHelper.megaStateFlags.cullMode = GfxCullMode.None;
         fillDebugColorFromCollisionFlags(this.collisionMaterialInstance.konst0, this.node.collisionFlags);
     }
 
@@ -585,7 +585,7 @@ export class WorldRenderer extends BasicGXRendererHelper {
         this.rootNode.stopAnimation();
     }
 
-    public prepareToRender(device: GfxDevice, hostAccessPass: GfxHostAccessPass, viewerInput: Viewer.ViewerRenderInput): void {
+    public prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
         if (this.evtctx !== null)
             this.evtctx.exec();
 
@@ -608,7 +608,7 @@ export class WorldRenderer extends BasicGXRendererHelper {
             this.mobj[i].prepareToRender(device, renderInstManager, viewerInput);
 
         renderInstManager.popTemplateRenderInst();
-        this.renderHelper.prepareToRender(device, hostAccessPass);
+        this.renderHelper.prepareToRender();
     }
 
     public createPanels(): UI.Panel[] {

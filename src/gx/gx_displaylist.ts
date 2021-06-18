@@ -40,6 +40,7 @@ import * as GX from './gx_enum';
 import { Endianness, getSystemEndianness } from '../endian';
 import { GfxFormat, FormatCompFlags, FormatTypeFlags, getFormatCompByteSize, getFormatCompFlagsComponentCount, getFormatTypeFlags, getFormatComponentCount, getFormatFlags, FormatFlags, makeFormat, setFormatFlags } from '../gfx/platform/GfxPlatformFormat';
 import { HashMap, nullHashFunc } from '../HashMap';
+import { arrayCopy, arrayEqual } from '../gfx/platform/GfxPlatformUtil';
 
 // GX_SetVtxAttrFmt
 export interface GX_VtxAttrFmt {
@@ -147,8 +148,8 @@ export interface LoadedVertexDraw {
 }
 
 export interface LoadedVertexData {
-    indexData: ArrayBuffer;
-    vertexBuffers: ArrayBuffer[];
+    indexData: ArrayBufferLike;
+    vertexBuffers: ArrayBufferLike[];
     totalIndexCount: number;
     totalVertexCount: number;
     vertexId: number;
@@ -281,18 +282,18 @@ export function getAttributeFormatCompFlagsRaw(vtxAttrib: GX.Attr, compCnt: GX.C
     switch (vtxAttrib) {
     case GX.Attr.POS:
         if (compCnt === GX.CompCnt.POS_XY)
-            return FormatCompFlags.COMP_RG;
+            return FormatCompFlags.RG;
         else if (compCnt === GX.CompCnt.POS_XYZ)
-            return FormatCompFlags.COMP_RGB;
+            return FormatCompFlags.RGB;
     case GX.Attr.NRM:
         // Normals always have 3 components per index.
-        return FormatCompFlags.COMP_RGB;
+        return FormatCompFlags.RGB;
     case GX.Attr.CLR0:
     case GX.Attr.CLR1:
         if (compCnt === GX.CompCnt.CLR_RGB)
-            return FormatCompFlags.COMP_RGB;
+            return FormatCompFlags.RGB;
         else if (compCnt === GX.CompCnt.CLR_RGBA)
-            return FormatCompFlags.COMP_RGBA;
+            return FormatCompFlags.RGBA;
     case GX.Attr.TEX0:
     case GX.Attr.TEX1:
     case GX.Attr.TEX2:
@@ -302,9 +303,9 @@ export function getAttributeFormatCompFlagsRaw(vtxAttrib: GX.Attr, compCnt: GX.C
     case GX.Attr.TEX6:
     case GX.Attr.TEX7:
         if (compCnt === GX.CompCnt.TEX_S)
-            return FormatCompFlags.COMP_R;
+            return FormatCompFlags.R;
         else if (compCnt === GX.CompCnt.TEX_ST)
-            return FormatCompFlags.COMP_RG;
+            return FormatCompFlags.RG;
     case GX.Attr.NULL:
     default:
         // Shouldn't ever happen
@@ -315,7 +316,7 @@ export function getAttributeFormatCompFlagsRaw(vtxAttrib: GX.Attr, compCnt: GX.C
 function getAttributeFormatCompFlags(vtxAttrib: GX.Attr, vatFormat: GX_VtxAttrFmt): FormatCompFlags {
     // MTXIDX fields don't have VAT entries.
     if (isVtxAttribMtxIdx(vtxAttrib))
-        return FormatCompFlags.COMP_R;
+        return FormatCompFlags.R;
 
     return getAttributeFormatCompFlagsRaw(vtxAttrib, vatFormat.compCnt);
 }
@@ -419,16 +420,16 @@ function getAttributeFormat(vatLayouts: (VatLayout | undefined)[], vtxAttrib: GX
 
     if (vtxAttrib === GX.Attr.POS) {
         // We pack PNMTXIDX into w of POS.
-        formatCompFlags = FormatCompFlags.COMP_RGBA;
+        formatCompFlags = FormatCompFlags.RGBA;
     } else if (isVtxAttribColor(vtxAttrib)) {
         // For color attributes, we always output all 4 components.
-        formatCompFlags = FormatCompFlags.COMP_RGBA;
+        formatCompFlags = FormatCompFlags.RGBA;
     } else if (isVtxAttribTexMtxIdx(vtxAttrib)) {
         // We pack TexMtxIdx into multi-channel vertex inputs.
-        formatCompFlags = FormatCompFlags.COMP_RGBA;
+        formatCompFlags = FormatCompFlags.RGBA;
     } else if (isVtxAttribTex(vtxAttrib)) {
         assert(baseFormat === GfxFormat.F32_R);
-        formatCompFlags = FormatCompFlags.COMP_RGBA;
+        formatCompFlags = FormatCompFlags.RGBA;
     } else {
         // Go over all layouts and pick the best one.
         for (let i = 0; i < vatLayouts.length; i++) {
@@ -559,7 +560,7 @@ export function compileLoadedVertexLayout(vat: GX_VtxAttrFmt[][], vcd: GX_VtxDes
 
         if (isVtxAttribMtxIdx(vtxAttrib)) {
             // Remove the normalized flag for the conversion.
-            fieldFormat = setFormatFlags(fieldFormat, FormatFlags.NONE);
+            fieldFormat = setFormatFlags(fieldFormat, FormatFlags.None);
         }
 
         const fieldByteOffset = getFormatCompByteSize(input.format) * fieldCompOffset;
@@ -651,7 +652,7 @@ function generateRunVertices(loadedVertexLayout: LoadedVertexLayout, vatLayout: 
 
         function compileWriteOneComponent(offs: number, value: string): string {
             const typeFlags = getFormatTypeFlags(dstFormat);
-            const isNorm = getFormatFlags(dstFormat) & FormatFlags.NORMALIZED;
+            const isNorm = getFormatFlags(dstFormat) & FormatFlags.Normalized;
             if (typeFlags === FormatTypeFlags.F32)
                 return compileWriteOneComponentF32(offs, value);
             else if (typeFlags === FormatTypeFlags.U8 && isNorm)
@@ -1155,24 +1156,6 @@ class VtxLoaderImpl implements VtxLoader {
 interface VtxLoaderDesc {
     vat: GX_VtxAttrFmt[][];
     vcd: GX_VtxDesc[];
-}
-
-type EqualFunc<K> = (a: K, b: K) => boolean;
-type CopyFunc<T> = (a: T) => T;
-
-function arrayCopy<T>(a: T[], copyFunc: CopyFunc<T>): T[] {
-    const b = Array(a.length);
-    for (let i = 0; i < a.length; i++)
-        b[i] = copyFunc(a[i]);
-    return b;
-}
-
-function arrayEqual<T>(a: T[], b: T[], e: EqualFunc<T>): boolean {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++)
-        if (!e(a[i], b[i]))
-            return false;
-    return true;
 }
 
 function vtxAttrFmtCopy(a: GX_VtxAttrFmt | undefined): GX_VtxAttrFmt | undefined {

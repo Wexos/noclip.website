@@ -1,5 +1,5 @@
 
-import { mat4, vec3 } from 'gl-matrix';
+import { mat4, ReadonlyMat4, vec3, vec4 } from 'gl-matrix';
 
 import ArrayBufferSlice from '../ArrayBufferSlice';
 import { readString, assertExists, assert, nArray, hexzero } from '../util';
@@ -8,7 +8,6 @@ import { DataFetcher } from '../DataFetcher';
 import * as Viewer from '../viewer';
 import * as BYML from '../byml';
 import * as RARC from '../Common/JSYSTEM/JKRArchive';
-import * as Yaz0 from '../Common/Compression/Yaz0';
 import * as UI from '../ui';
 import * as GX from '../gx/gx_enum';
 
@@ -18,9 +17,9 @@ import { Camera, texProjCameraSceneTex } from '../Camera';
 import { fillSceneParamsDataOnTemplate, GXMaterialHelperGfx, GXShapeHelperGfx, loadedDataCoalescerComboGfx, PacketParams, MaterialParams, ColorKind, SceneParams, fillSceneParamsData, ub_SceneParamsBufferSize } from '../gx/gx_render';
 import { DisplayListRegisters, displayListRegistersRun, displayListRegistersInitGX } from '../gx/gx_displaylist';
 import { GXRenderHelperGfx } from '../gx/gx_render';
-import { GfxDevice, GfxRenderPass, GfxHostAccessPass, GfxFormat, GfxTexture, makeTextureDescriptor2D, GfxColorWriteMask, GfxBlendMode } from '../gfx/platform/GfxPlatform';
-import { GfxRenderInstManager, GfxRenderInstList, gfxRenderInstCompareNone, GfxRenderInstExecutionOrder, gfxRenderInstCompareSortKey } from '../gfx/render/GfxRenderer';
-import { BasicRenderTarget, depthClearRenderPassDescriptor, ColorTexture, noClearRenderPassDescriptor, transparentBlackFullClearRenderPassDescriptor } from '../gfx/helpers/RenderTargetHelpers';
+import { GfxDevice, GfxRenderPass, GfxFormat, GfxTexture, makeTextureDescriptor2D, GfxChannelWriteMask, GfxProgram, GfxWrapMode, GfxTexFilterMode, GfxMipFilterMode, GfxBlendMode, GfxBlendFactor } from '../gfx/platform/GfxPlatform';
+import { GfxRenderInstManager, GfxRenderInstList, gfxRenderInstCompareNone, GfxRenderInstExecutionOrder, gfxRenderInstCompareSortKey } from '../gfx/render/GfxRenderInstManager';
+import { pushAntialiasingPostProcessPass, setBackbufferDescSimple, standardFullClearRenderPassDescriptor } from '../gfx/helpers/RenderGraphHelpers';
 import { GfxRenderCache } from '../gfx/render/GfxRenderCache';
 import { SceneContext } from '../SceneBase';
 import { range, getMatrixAxisZ, computeProjectionMatrixFromCuboid } from '../MathHelpers';
@@ -29,7 +28,7 @@ import { parseMaterial, GX_Program } from '../gx/gx_material';
 import { BTIData } from '../Common/JSYSTEM/JUTTexture';
 import { FlowerPacket, TreePacket, GrassPacket } from './Grass';
 import { dRes_control_c, ResType } from './d_resorce';
-import { dStage_stageDt_c, dStage_dt_c_stageLoader, dStage_dt_c_stageInitLoader, dStage_roomStatus_c, dStage_dt_c_roomLoader, dStage_dt_c_roomReLoader } from './d_stage';
+import { dStage_stageDt_c, dStage_dt_c_stageLoader, dStage_dt_c_stageInitLoader, dStage_roomStatus_c, dStage_dt_c_roomLoader, dStage_dt_c_roomReLoader, dStage_actorCreate } from './d_stage';
 import { dScnKy_env_light_c, dKy_tevstr_init, dKy_setLight, dKy__RegisterConstructors, dKankyo_create } from './d_kankyo';
 import { dKyw__RegisterConstructors } from './d_kankyo_wether';
 import { fGlobals, fpc_pc__ProfileList, fopScn, cPhs__Status, fpcCt_Handler, fopAcM_create, fpcM_Management, fopDw_Draw, fpcSCtRq_Request, fpc__ProcessName, fpcPf__Register, fopAcM_prm_class, fpcLy_SetCurrentLayer, fopAc_ac_c } from './framework';
@@ -37,15 +36,19 @@ import { d_a__RegisterConstructors, dDlst_2DStatic_c } from './d_a';
 import { LegacyActor__RegisterFallbackConstructor } from './LegacyActor';
 import { PeekZManager } from './d_dlst_peekZ';
 import { dBgS } from './d_bg';
-import { dfRange } from '../DebugFloaters';
-import { colorNewCopy, White, colorCopy } from '../Color';
+import { dfRange, dfShow } from '../DebugFloaters';
+import { colorNewCopy, White, colorCopy, TransparentBlack } from '../Color';
 import { GX_Array, GX_VtxAttrFmt, compileVtxLoader, GX_VtxDesc } from '../gx/gx_displaylist';
 import { GfxBufferCoalescerCombo } from '../gfx/helpers/BufferHelpers';
-import { setAttachmentStateSimple } from '../gfx/helpers/GfxMegaStateDescriptorHelpers';
+import { fullscreenMegaState, makeMegaState, setAttachmentStateSimple } from '../gfx/helpers/GfxMegaStateDescriptorHelpers';
 import { GXMaterialBuilder } from '../gx/GXMaterialBuilder';
 import { TSDraw } from '../SuperMarioGalaxy/DDraw';
 import { d_a_sea } from './d_a_sea';
 import { dPa_control_c } from './d_particle';
+import { GfxrAttachmentSlot, GfxrRenderTargetDescription } from '../gfx/render/GfxRenderGraph';
+import { preprocessProgram_GLSL } from '../gfx/shaderc/GfxShaderCompiler';
+import { GfxShaderLibrary } from '../gfx/helpers/ShaderHelpers';
+import { fillVec4, fillVec4v } from '../gfx/helpers/UniformBufferHelpers';
 
 type SymbolData = { Filename: string, SymbolName: string, Data: ArrayBufferSlice };
 type SymbolMapData = { SymbolData: SymbolData[] };
@@ -183,8 +186,8 @@ class dDlst_alphaModel_c {
         frontZ.ropInfo.depthFunc = GX.CompareType.GREATER;
         this.materialHelperFrontZ = new GXMaterialHelperGfx(frontZ);
 
-        setAttachmentStateSimple(this.materialHelperBackRevZ.megaStateFlags, { colorWriteMask: GfxColorWriteMask.ALPHA });
-        setAttachmentStateSimple(this.materialHelperFrontZ.megaStateFlags, { colorWriteMask: GfxColorWriteMask.ALPHA });
+        setAttachmentStateSimple(this.materialHelperBackRevZ.megaStateFlags, { channelWriteMask: GfxChannelWriteMask.Alpha });
+        setAttachmentStateSimple(this.materialHelperFrontZ.megaStateFlags, { channelWriteMask: GfxChannelWriteMask.Alpha });
 
         assert(this.materialHelperBackRevZ.materialParamsBufferSize === this.materialHelperFrontZ.materialParamsBufferSize);
 
@@ -212,10 +215,10 @@ class dDlst_alphaModel_c {
         this.orthoQuad.position3f32(1, 1, 0);
         this.orthoQuad.position3f32(0, 1, 0);
         this.orthoQuad.end();
-        this.orthoQuad.endDraw(device, cache);
+        this.orthoQuad.endDraw(cache);
     }
 
-    public reset(): void {
+    private reset(): void {
         this.datas.length = 0;
     }
 
@@ -267,6 +270,8 @@ class dDlst_alphaModel_c {
         mat4.identity(packetParams.u_PosMtx[0]);
         this.materialHelperDrawAlpha.allocatePacketParamsDataOnInst(renderInst, packetParams);
         renderInstManager.submitRenderInst(renderInst);
+
+        this.reset();
     }
 
     public destroy(device: GfxDevice): void {
@@ -301,27 +306,13 @@ export class dDlst_list_c {
         new GfxRenderInstList(gfxRenderInstCompareNone, GfxRenderInstExecutionOrder.Backwards),
         new GfxRenderInstList(gfxRenderInstCompareNone, GfxRenderInstExecutionOrder.Backwards),
     ];
+    public hat = new GfxRenderInstList(gfxRenderInstCompareSortKey, GfxRenderInstExecutionOrder.Forwards);
     public alphaModel = new GfxRenderInstList(gfxRenderInstCompareNone, GfxRenderInstExecutionOrder.Forwards);
     public peekZ = new PeekZManager();
     public alphaModel0: dDlst_alphaModel_c;
 
     constructor(device: GfxDevice, cache: GfxRenderCache, symbolMap: SymbolMap) {
         this.alphaModel0 = new dDlst_alphaModel_c(device, cache, symbolMap);
-    }
-
-    public reset(): void {
-        this.sky[0].reset();
-        this.sky[1].reset();
-        this.sea.reset();
-        this.main[0].reset();
-        this.main[1].reset();
-        this.wetherEffect.reset();
-        for (let i = 0; i < this.effect.length; i++)
-            this.effect[i].reset();
-        this.ui[0].reset();
-        this.ui[1].reset();
-        this.alphaModel.reset();
-        this.alphaModel0.reset();
     }
 
     public destroy(device: GfxDevice): void {
@@ -448,9 +439,7 @@ class DynToonTex {
 
             // Recreate toon texture.
             this.fillTextureData(this.texPower);
-            const hostAccessPass = device.createHostAccessPass();
-            hostAccessPass.uploadTextureData(this.gfxTexture, 0, this.textureData);
-            device.submitPass(hostAccessPass);
+            device.uploadTextureData(this.gfxTexture, 0, this.textureData);
         }
     }
 
@@ -532,8 +521,10 @@ const enum EffectDrawGroup {
 
 const scratchMatrix = mat4.create();
 export class WindWakerRenderer implements Viewer.SceneGfx {
-    private renderTarget = new BasicRenderTarget();
-    public opaqueSceneTexture = new ColorTexture();
+    private mainColorDesc = new GfxrRenderTargetDescription(GfxFormat.U8_RGBA_RT);
+    private mainDepthDesc = new GfxrRenderTargetDescription(GfxFormat.D32F);
+    private opaqueSceneTextureMapping = new TextureMapping();
+
     public renderHelper: GXRenderHelperGfx;
 
     public rooms: WindWakerRoom[] = [];
@@ -545,11 +536,15 @@ export class WindWakerRenderer implements Viewer.SceneGfx {
 
     public onstatechanged!: () => void;
 
+    public fullscreenBlitProgram: GfxProgram;
+
     constructor(public device: GfxDevice, public globals: dGlobals) {
         this.renderHelper = new GXRenderHelperGfx(device);
         this.renderHelper.renderInstManager.disableSimpleMode();
 
         this.renderCache = this.renderHelper.renderInstManager.gfxRenderCache;
+
+        this.fullscreenBlitProgram = this.renderCache.createProgramSimple(preprocessProgram_GLSL(device.queryVendorInfo(), GfxShaderLibrary.fullscreenVS, GfxShaderLibrary.fullscreenBlitOneTexPS));
     }
 
     private setVisibleLayerMask(m: number): void {
@@ -630,7 +625,7 @@ export class WindWakerRenderer implements Viewer.SceneGfx {
         return -1;
     }
 
-    private prepareToRender(device: GfxDevice, hostAccessPass: GfxHostAccessPass, viewerInput: Viewer.ViewerRenderInput): void {
+    private executeDrawAll(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
         const template = this.renderHelper.pushTemplateRenderInst();
         const renderInstManager = this.renderHelper.renderInstManager;
 
@@ -694,7 +689,6 @@ export class WindWakerRenderer implements Viewer.SceneGfx {
         renderInstManager.setCurrentRenderInstList(dlst.main[0]);
         {
             this.globals.particleCtrl.calc(viewerInput);
-            this.globals.particleCtrl.setOpaqueSceneTexture(this.opaqueSceneTexture.gfxTexture!);
 
             for (let group = EffectDrawGroup.Main; group <= EffectDrawGroup.Indirect; group++) {
                 let texPrjMtx: mat4 | null = null;
@@ -711,72 +705,94 @@ export class WindWakerRenderer implements Viewer.SceneGfx {
         }
 
         this.renderHelper.renderInstManager.popTemplateRenderInst();
-        this.renderHelper.prepareToRender(device, hostAccessPass);
-
         this.globals.renderHacks.renderHacksChanged = false;
     }
 
-    private executeList(device: GfxDevice, renderInstManager: GfxRenderInstManager, pass: GfxRenderPass, list: GfxRenderInstList): void {
-        list.drawOnPassRenderer(device, renderInstManager.gfxRenderCache, pass);
+    private executeList(passRenderer: GfxRenderPass, list: GfxRenderInstList): void {
+        this.renderHelper.renderInstManager.drawListOnPassRenderer(list, passRenderer);
     }
 
-    private executeListSet(device: GfxDevice, renderInstManager: GfxRenderInstManager, pass: GfxRenderPass, listSet: dDlst_list_Set): void {
-        this.executeList(device, renderInstManager, pass, listSet[0]);
-        this.executeList(device, renderInstManager, pass, listSet[1]);
+    private executeListSet(passRenderer: GfxRenderPass, listSet: dDlst_list_Set): void {
+        this.executeList(passRenderer, listSet[0]);
+        this.executeList(passRenderer, listSet[1]);
     }
 
-    public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): GfxRenderPass | null {
+    public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput) {
         const dlst = this.globals.dlst;
+        dlst.peekZ.beginFrame(device);
 
-        this.renderTarget.setParameters(device, viewerInput.backbufferWidth, viewerInput.backbufferHeight);
-        this.opaqueSceneTexture.setParameters(device, viewerInput.backbufferWidth, viewerInput.backbufferHeight);
-        dlst.peekZ.setParameters(device, this.renderTarget.depthStencilAttachment.width, this.renderTarget.depthStencilAttachment.height);
+        this.executeDrawAll(device, viewerInput);
 
         const renderInstManager = this.renderHelper.renderInstManager;
+        const builder = this.renderHelper.renderGraph.newGraphBuilder();
 
-        const hostAccessPass = device.createHostAccessPass();
-        this.prepareToRender(device, hostAccessPass, viewerInput);
-        device.submitPass(hostAccessPass);
+        setBackbufferDescSimple(this.mainColorDesc, viewerInput);
+        this.mainColorDesc.colorClearColor = TransparentBlack;
 
-        // First, render the skybox.
-        const skyboxPassRenderer = this.renderTarget.createRenderPass(device, viewerInput.viewport, transparentBlackFullClearRenderPassDescriptor);
-        this.executeListSet(device, renderInstManager, skyboxPassRenderer, dlst.sky);
-        device.submitPass(skyboxPassRenderer);
+        this.mainDepthDesc.copyDimensions(this.mainColorDesc);
+        this.mainDepthDesc.depthClearValue = standardFullClearRenderPassDescriptor.depthClearValue!;
 
-        // Now do main pass.
-        const mainPassRenderer = this.renderTarget.createRenderPass(device, viewerInput.viewport, depthClearRenderPassDescriptor, this.opaqueSceneTexture.gfxTexture);
-        this.executeList(device, renderInstManager, mainPassRenderer, dlst.sea);
-        this.executeListSet(device, renderInstManager, mainPassRenderer, dlst.main);
+        const mainColorTargetID = builder.createRenderTargetID(this.mainColorDesc, 'Main Color');
 
-        // Execute our alpha model stuff.
-        this.executeList(device, renderInstManager, mainPassRenderer, dlst.alphaModel);
+        builder.pushPass((pass) => {
+            pass.setDebugName('Skybox');
 
-        this.executeList(device, renderInstManager, mainPassRenderer, dlst.effect[EffectDrawGroup.Main]);
-        this.executeList(device, renderInstManager, mainPassRenderer, dlst.wetherEffect);
-        this.executeListSet(device, renderInstManager, mainPassRenderer, dlst.ui);
-        device.submitPass(mainPassRenderer);
+            pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+            const skyboxDepthTargetID = builder.createRenderTargetID(this.mainDepthDesc, 'Skybox Depth');
+            pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, skyboxDepthTargetID);
+            pass.exec((passRenderer) => {
+                this.executeListSet(passRenderer, dlst.sky);
+            });
+        });
 
-        // Execute PeekZ.
-        dlst.peekZ.submitFrame(device, this.renderTarget.depthStencilAttachment.gfxAttachment!);
+        const mainDepthTargetID = builder.createRenderTargetID(this.mainDepthDesc, 'Main Depth');
+
+        builder.pushPass((pass) => {
+            pass.setDebugName('Main');
+
+            pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+            pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
+            pass.exec((passRenderer) => {
+                this.executeList(passRenderer, dlst.sea);
+                this.executeListSet(passRenderer, dlst.main);
+
+                // Execute our alpha model stuff.
+                this.executeList(passRenderer, dlst.alphaModel);
+        
+                this.executeList(passRenderer, dlst.effect[EffectDrawGroup.Main]);
+                this.executeList(passRenderer, dlst.wetherEffect);
+                this.executeListSet(passRenderer, dlst.ui);
+            });
+        });
+
+        dlst.peekZ.pushPasses(device, renderInstManager, builder, mainDepthTargetID);
         dlst.peekZ.peekData(device);
 
-        // Now indirect stuff.
-        const indirectPassRenderer = this.renderTarget.createRenderPass(device, viewerInput.viewport, noClearRenderPassDescriptor, viewerInput.onscreenTexture);
-        this.executeList(device, renderInstManager, mainPassRenderer, dlst.effect[EffectDrawGroup.Indirect]);
+        builder.pushPass((pass) => {
+            pass.setDebugName('Indirect');
 
-        device.submitPass(indirectPassRenderer);
+            pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
+            pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
 
-        dlst.reset();
+            const opaqueSceneTextureID = builder.resolveRenderTarget(mainColorTargetID);
+            pass.attachResolveTexture(opaqueSceneTextureID);
+            pass.exec((passRenderer, scope) => {
+                this.opaqueSceneTextureMapping.gfxTexture = scope.getResolveTextureForID(opaqueSceneTextureID);
+                dlst.effect[EffectDrawGroup.Indirect].resolveLateSamplerBinding('OpaqueSceneTexture', this.opaqueSceneTextureMapping);
+                this.executeList(passRenderer, dlst.effect[EffectDrawGroup.Indirect]);
+            });
+        });
+        pushAntialiasingPostProcessPass(builder, this.renderHelper, viewerInput, mainColorTargetID);
+        builder.resolveRenderTargetToExternalTexture(mainColorTargetID, viewerInput.onscreenTexture);
+
+        this.renderHelper.prepareToRender();
+        this.renderHelper.renderGraph.execute(builder);
         renderInstManager.resetRenderInsts();
-
-        return null;
     }
 
     public destroy(device: GfxDevice): void {
-        this.renderHelper.destroy(device);
-        this.opaqueSceneTexture.destroy(device);
+        this.renderHelper.destroy();
         this.extraTextures.destroy(device);
-        this.renderTarget.destroy(device);
         this.globals.destroy(device);
         this.globals.frameworkGlobals.delete(this.globals);
     }
@@ -787,13 +803,14 @@ export class ModelCache {
     private fileDataCache = new Map<string, ArrayBufferSlice>();
     private archivePromiseCache = new Map<string, Promise<RARC.JKRArchive>>();
     private archiveCache = new Map<string, RARC.JKRArchive>();
-    public cache = new GfxRenderCache();
+    public cache: GfxRenderCache;
 
     public resCtrl = new dRes_control_c();
     public currentStage: string;
     public onloadedcallback: (() => void) | null = null;
 
     constructor(public device: GfxDevice, private dataFetcher: DataFetcher, private decompressor: RARC.JKRDecompressor) {
+        this.cache = new GfxRenderCache(device);
     }
 
     public waitForLoad(): Promise<any> {
@@ -910,7 +927,7 @@ export class ModelCache {
     }
 
     public destroy(device: GfxDevice): void {
-        this.cache.destroy(device);
+        this.cache.destroy();
         this.resCtrl.destroy(device);
     }
 }
@@ -1053,6 +1070,19 @@ class SceneDesc {
 
         dStage_dt_c_stageInitLoader(globals, globals.dStage_dt, dzs);
         dStage_dt_c_stageLoader(globals, globals.dStage_dt, dzs);
+
+        /*dStage_actorCreate(globals, 'Link', {
+            roomNo: 44,
+            enemyNo: 0,
+            gbaName: 0,
+            parentPcId: -1,
+            subtype: 0,
+            layer: 0,
+            parameters: 0,
+            pos: vec3.fromValues(-202620, 400, 316000),
+            rot: vec3.fromValues(0, 0.4 * 0xFFFF, 0),
+            scale: vec3.fromValues(1, 1, 1),
+        });*/
 
         // If this is a single-room scene, then set mStayNo.
         if (this.rooms.length === 1)

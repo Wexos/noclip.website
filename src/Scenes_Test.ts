@@ -1,20 +1,21 @@
 
 import * as Viewer from "./viewer";
-import { GfxDevice, GfxRenderPass } from "./gfx/platform/GfxPlatform";
+import { GfxDevice } from "./gfx/platform/GfxPlatform";
 import { SceneContext } from "./SceneBase";
 
 import { createBasicRRESRendererFromBRRES } from "./rres/scenes";
 import * as H3D from "./Common/CTR_H3D/H3D";
 import { CtrTextureHolder } from "./oot3d/render";
 import * as NARC from "./nns_g3d/narc";
-import { BasicRenderTarget, standardFullClearRenderPassDescriptor } from "./gfx/helpers/RenderTargetHelpers";
+import { makeBackbufferDescSimple, standardFullClearRenderPassDescriptor } from "./gfx/helpers/RenderGraphHelpers";
+import { GfxRenderHelper } from "./gfx/render/GfxRenderHelper";
+import { GfxrAttachmentSlot } from "./gfx/render/GfxRenderGraph";
 
 const id = 'test';
 const name = "Test Scenes";
 
 export class EmptyScene implements Viewer.SceneGfx {
     public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput) {
-        return null;
     }
 
     public destroy(device: GfxDevice): void {
@@ -22,17 +23,29 @@ export class EmptyScene implements Viewer.SceneGfx {
 }
 
 class EmptyClearScene implements Viewer.SceneGfx {
-    public renderTarget = new BasicRenderTarget();
+    private renderHelper: GfxRenderHelper;
+
+    constructor(device: GfxDevice) {
+        this.renderHelper = new GfxRenderHelper(device);
+    }
 
     public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput) {
-        this.renderTarget.setParameters(device, viewerInput.backbufferWidth, viewerInput.backbufferHeight);
+        const desc = makeBackbufferDescSimple(GfxrAttachmentSlot.Color0, viewerInput, standardFullClearRenderPassDescriptor);
 
-        const renderPass = this.renderTarget.createRenderPass(device, viewerInput.viewport, standardFullClearRenderPassDescriptor, viewerInput.onscreenTexture);
-        device.submitPass(renderPass);
-        return null;
+        const builder = this.renderHelper.renderGraph.newGraphBuilder();
+        const mainColorID = builder.createRenderTargetID(desc, "Main Color");
+
+        builder.pushPass((pass) => {
+            pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorID);
+        });
+
+        builder.resolveRenderTargetToExternalTexture(mainColorID, viewerInput.onscreenTexture);
+
+        this.renderHelper.renderGraph.execute(builder);
     }
 
     public destroy(device: GfxDevice): void {
+        this.renderHelper.destroy();
     }
 }
 
@@ -40,7 +53,7 @@ class EmptyClearSceneDesc implements Viewer.SceneDesc {
     constructor(public id: string, public name = id) {}
 
     public async createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
-        return new EmptyClearScene();
+        return new EmptyClearScene(device);
     }
 }
 

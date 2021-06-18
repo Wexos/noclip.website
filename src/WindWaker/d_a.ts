@@ -4,7 +4,7 @@ import { dGlobals, dDlst_alphaModel__Type } from "./zww_scenes";
 import { vec3, mat4, quat, ReadonlyVec3, vec2 } from "gl-matrix";
 import { dComIfG_resLoad, ResType } from "./d_resorce";
 import { J3DModelInstance, J3DModelData, buildEnvMtx } from "../Common/JSYSTEM/J3D/J3DGraphBase";
-import { GfxRenderInstManager, GfxRenderInst } from "../gfx/render/GfxRenderer";
+import { GfxRenderInstManager, GfxRenderInst } from "../gfx/render/GfxRenderInstManager";
 import { ViewerRenderInput } from "../viewer";
 import { settingTevStruct, LightType, setLightTevColorType, LIGHT_INFLUENCE, dKy_plight_set, dKy_plight_cut, dKy_tevstr_c, dKy_tevstr_init, dKy_checkEventNightStop, dKy_change_colpat, dKy_setLight__OnModelInstance, WAVE_INFLUENCE, dKy__waveinfl_cut, dKy__waveinfl_set, dKy_setLight__OnMaterialParams } from "./d_kankyo";
 import { mDoExt_modelUpdateDL, mDoExt_btkAnm, mDoExt_brkAnm, mDoExt_bckAnm, mDoExt_McaMorf } from "./m_do_ext";
@@ -27,7 +27,7 @@ import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 import { GlobalSaveManager } from "../SaveManager";
 import { TevDefaultSwapTables } from "../gx/gx_material";
 import { Endianness } from "../endian";
-import { dPa_splashEcallBack, dPa_trackEcallBack, dPa_waveEcallBack, dPa__StopEmitter } from "./d_particle";
+import { dPa_splashEcallBack, dPa_trackEcallBack, dPa_waveEcallBack } from "./d_particle";
 import { JPABaseEmitter, JPASetRMtxSTVecFromMtx } from "../Common/JSYSTEM/JPA";
 
 // Framework'd actors
@@ -1492,7 +1492,7 @@ export class dDlst_2DStatic_c {
         this.ddraw.texCoord2f32(GX.Attr.TEX0, 1, 1);
         this.ddraw.end();
 
-        this.ddraw.endDraw(device, cache);
+        this.ddraw.endDraw(cache);
     }
 
     public setOnRenderInst(renderInst: GfxRenderInst): void {
@@ -1644,7 +1644,7 @@ class mgameboard_seres {
             return status;
 
         if (this.decodeState === cPhs__Status.Started) {
-            ctx.ctx.decodeAudioData(globals.modelCache.getFileData(this.filename).arrayBuffer).then((buffer) => {
+            ctx.ctx.decodeAudioData(globals.modelCache.getFileData(this.filename).arrayBuffer as ArrayBuffer).then((buffer) => {
                 this.buffer = buffer;
                 this.decodeState = cPhs__Status.Complete;
             });
@@ -2292,7 +2292,7 @@ class dCloth_packet_c {
 
     private drawSide(device: GfxDevice, renderInstManager: GfxRenderInstManager, ddraw: TDDraw, front: boolean): void {
         this.plot(ddraw, front);
-        const renderInst = ddraw.makeRenderInst(device, renderInstManager);
+        const renderInst = ddraw.makeRenderInst(renderInstManager);
         const materialHelper = front ? this.materialHelper : this.materialHelperBack;
         materialHelper.setOnRenderInst(device, renderInstManager.gfxRenderCache, renderInst);
         renderInstManager.submitRenderInst(renderInst);
@@ -2330,7 +2330,7 @@ class dCloth_packet_c {
         ddraw.allocPrimitives(GX.Command.DRAW_TRIANGLE_STRIP, ((this.flyGridSize - 1) * this.hoistGridSize) * 2 * 2);
         this.drawSide(device, renderInstManager, ddraw, true);
         this.drawSide(device, renderInstManager, ddraw, false);
-        ddraw.endAndUpload(device, renderInstManager);
+        ddraw.endAndUpload(renderInstManager);
 
         renderInstManager.popTemplateRenderInst();
     }
@@ -2777,7 +2777,7 @@ class d_a_majuu_flag extends fopAc_ac_c {
 
     private drawSide(device: GfxDevice, renderInstManager: GfxRenderInstManager, ddraw: TDDraw, front: boolean): void {
         this.plot(ddraw, front);
-        const renderInst = ddraw.makeRenderInst(device, renderInstManager);
+        const renderInst = ddraw.makeRenderInst(renderInstManager);
         const materialHelper = front ? this.materialHelper : this.materialHelperBack;
         materialHelper.setOnRenderInst(device, renderInstManager.gfxRenderCache, renderInst);
         renderInstManager.submitRenderInst(renderInst);
@@ -2822,7 +2822,7 @@ class d_a_majuu_flag extends fopAc_ac_c {
         ddraw.allocPrimitives(GX.Command.DRAW_TRIANGLE_STRIP, (11 + 9 + 7 + 5 + 3 + 1) * 2);
         this.drawSide(device, renderInstManager, ddraw, true);
         this.drawSide(device, renderInstManager, ddraw, false);
-        ddraw.endAndUpload(device, renderInstManager);
+        ddraw.endAndUpload(renderInstManager);
 
         renderInstManager.popTemplateRenderInst();
     }
@@ -3569,13 +3569,13 @@ class d_a_obj_ikada extends fopAc_ac_c implements ModeFuncExec<d_a_obj_ikada_mod
         if (this.waveL !== null && this.waveL.emitter === null) {
             const emitter = globals.particleCtrl.set(globals, 0, 0x0037, this.wavePos, this.waveRot, null, 1.0, this.waveL);
             if (emitter !== null)
-                vec3.set(emitter.emitterDir, 0.5, 1.0, -0.3);
+                vec3.set(emitter.localDirection, 0.5, 1.0, -0.3);
         }
 
         if (this.waveR !== null && this.waveR.emitter === null) {
             const emitter = globals.particleCtrl.set(globals, 0, 0x0037, this.wavePos, this.waveRot, null, 1.0, this.waveR);
             if (emitter !== null)
-                vec3.set(emitter.emitterDir, -0.5, 1.0, -0.3);
+                vec3.set(emitter.localDirection, -0.5, 1.0, -0.3);
         }
 
         if (this.splash !== null && this.splash.emitter === null)
@@ -3585,7 +3585,7 @@ class d_a_obj_ikada extends fopAc_ac_c implements ModeFuncExec<d_a_obj_ikada_mod
             const emitter = globals.particleCtrl.set(globals, 5, 0x0036, this.trackPos, this.rot, null, 0.0, this.track);
             if (emitter !== null) {
                 vec3.set(emitter.globalScale, 1.0, 1.0, 1.0);
-                vec2.set(emitter.globalScale2D, 1.0, 1.0);
+                vec2.set(emitter.globalParticleScale, 1.0, 1.0);
             }
         }
     }
@@ -3942,17 +3942,17 @@ export class d_a_obj_flame extends fopAc_ac_c {
         }
 
         if (this.em0State === d_a_obj_em_state.TurnOff && this.em0 !== null) {
-            dPa__StopEmitter(this.em0);
+            this.em0.becomeInvalidEmitterImmediate();
             this.em0 = null;
         }
 
         if (this.em1State === d_a_obj_em_state.TurnOff && this.em1 !== null) {
-            dPa__StopEmitter(this.em1);
+            this.em1.becomeInvalidEmitterImmediate();
             this.em1 = null;
         }
 
         if (this.em2State === d_a_obj_em_state.TurnOff && this.em2 !== null) {
-            dPa__StopEmitter(this.em2);
+            this.em2.becomeInvalidEmitterImmediate();
             this.em2 = null;
         }
     }

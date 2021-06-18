@@ -4,16 +4,16 @@ import * as UI from './ui';
 import InputManager from './InputManager';
 import { SceneDesc, SceneGroup } from "./SceneBase";
 import { CameraController, Camera, XRCameraController, CameraUpdateResult } from './Camera';
-import { GfxDevice, GfxSwapChain, GfxRenderPass, GfxDebugGroup, GfxTexture, GfxNormalizedViewportCoords } from './gfx/platform/GfxPlatform';
+import { GfxDevice, GfxSwapChain, GfxDebugGroup, GfxTexture, GfxNormalizedViewportCoords, GfxRenderPassDescriptor } from './gfx/platform/GfxPlatform';
 import { createSwapChainForWebGL2, gfxDeviceGetImpl_GL, GfxPlatformWebGL2Config } from './gfx/platform/GfxPlatformWebGL2';
 import { createSwapChainForWebGPU } from './gfx/platform/GfxPlatformWebGPU';
 import { downloadFrontBufferToCanvas } from './Screenshot';
 import { RenderStatistics, RenderStatisticsTracker } from './RenderStatistics';
-import { ColorAttachment, makeClearRenderPassDescriptor, makeEmptyRenderPassDescriptor } from './gfx/helpers/RenderTargetHelpers';
-import { OpaqueBlack } from './Color';
+import { AntialiasingMode } from './gfx/helpers/RenderGraphHelpers';
 import { WebXRContext } from './WebXR';
 import { MathConstants } from './MathHelpers';
 import { IS_DEVELOPMENT } from './BuildVersion';
+import { GlobalSaveManager } from './SaveManager';
 
 export interface ViewerUpdateInfo {
     time: number;
@@ -27,6 +27,11 @@ export interface Texture {
     activate?: () => Promise<void>;
 }
 
+interface MouseLocation {
+    mouseX: number;
+    mouseY: number;
+}
+
 export interface ViewerRenderInput {
     camera: Camera;
     time: number;
@@ -35,6 +40,8 @@ export interface ViewerRenderInput {
     backbufferHeight: number;
     viewport: Readonly<GfxNormalizedViewportCoords>;
     onscreenTexture: GfxTexture;
+    antialiasingMode: AntialiasingMode;
+    mouseLocation: MouseLocation;
 }
 
 export interface SceneGfx {
@@ -46,7 +53,7 @@ export interface SceneGfx {
     serializeSaveState?(dst: ArrayBuffer, offs: number): number;
     deserializeSaveState?(src: ArrayBuffer, offs: number, byteLength: number): number;
     onstatechanged?: () => void;
-    render(device: GfxDevice, renderInput: ViewerRenderInput): GfxRenderPass | null;
+    render(device: GfxDevice, renderInput: ViewerRenderInput): void;
     destroy(device: GfxDevice): void;
 }
 
@@ -63,30 +70,6 @@ export function resizeCanvas(canvas: HTMLCanvasElement, width: number, height: n
     canvas.setAttribute('style', `width: ${width}px; height: ${height}px;`);
     canvas.width = width * devicePixelRatio;
     canvas.height = height * devicePixelRatio;
-}
-
-// TODO(jstpierre): Find a more elegant way to write this that doesn't take as many resources.
-class ClearScene {
-    public colorAttachment = new ColorAttachment();
-    private renderPassDescriptor = makeClearRenderPassDescriptor(true, OpaqueBlack);
-
-    public minimize(device: GfxDevice): void {
-        this.colorAttachment.setParameters(device, 1, 1, 1);
-        device.setResourceLeakCheck(this.colorAttachment.gfxAttachment!, false);
-    }
-
-    public render(device: GfxDevice, viewerRenderInput: ViewerRenderInput): GfxRenderPass | null {
-        this.colorAttachment.setParameters(device, viewerRenderInput.backbufferWidth, viewerRenderInput.backbufferHeight);
-        this.renderPassDescriptor.colorAttachment = this.colorAttachment.gfxAttachment;
-        this.renderPassDescriptor.colorResolveTo = viewerRenderInput.onscreenTexture;
-        const renderPass = device.createRenderPass(this.renderPassDescriptor);
-        device.submitPass(renderPass);
-        return null;
-    }
-
-    public destroy(device: GfxDevice): void {
-        this.colorAttachment.destroy(device);
-    }
 }
 
 export class Viewer {
@@ -116,8 +99,6 @@ export class Viewer {
 
     private keyMoveSpeedListeners: Listener[] = [];
     private debugGroup: GfxDebugGroup = { name: 'Scene Rendering', drawCallCount: 0, bufferUploadCount: 0, textureBindCount: 0, triangleCount: 0 };
-    private clearScene: ClearScene = new ClearScene();
-    private resolveRenderPassDescriptor = makeEmptyRenderPassDescriptor();
 
     constructor(public gfxSwapChain: GfxSwapChain, public canvas: HTMLCanvasElement) {
         this.inputManager = new InputManager(this.canvas);
@@ -133,7 +114,14 @@ export class Viewer {
             backbufferHeight: 0,
             viewport: this.viewport,
             onscreenTexture: null!,
+            antialiasingMode: AntialiasingMode.None,
+            mouseLocation: this.inputManager,
         };
+
+        GlobalSaveManager.addSettingListener('AntialiasingMode', (saveManager, key) => {
+            const antialiasingMode = saveManager.loadSetting<AntialiasingMode>(key, AntialiasingMode.FXAA);
+            this.viewerRenderInput.antialiasingMode = antialiasingMode;
+        });
     }
 
     private onKeyMoveSpeed(): void {
@@ -153,27 +141,8 @@ export class Viewer {
     }
 
     private renderViewport(): void {
-        let renderPass: GfxRenderPass | null = null;
-        if (this.scene !== null) {
-            renderPass = this.scene.render(this.gfxDevice, this.viewerRenderInput);
-            this.clearScene.minimize(this.gfxDevice);
-        } else {
-            this.clearScene.render(this.gfxDevice, this.viewerRenderInput);
-        }
-
-        if (renderPass !== null) {
-            // Legacy API: needs resolve.
-            const descriptor = this.gfxDevice.queryRenderPass(renderPass);
-
-            this.gfxDevice.submitPass(renderPass);
-
-            // Resolve.
-            this.resolveRenderPassDescriptor.colorAttachment = descriptor.colorAttachment;
-            this.resolveRenderPassDescriptor.colorResolveTo = this.viewerRenderInput.onscreenTexture;
-            this.resolveRenderPassDescriptor.depthStencilAttachment = descriptor.depthStencilAttachment;
-            const resolvePass = this.gfxDevice.createRenderPass(this.resolveRenderPassDescriptor);
-            this.gfxDevice.submitPass(resolvePass);
-        }
+        if (this.scene !== null)
+            this.scene.render(this.gfxDevice, this.viewerRenderInput);
     }
 
     private render(): void {
@@ -334,7 +303,7 @@ export class Viewer {
     }
 }
 
-export { SceneDesc, SceneGroup };
+export type { SceneDesc, SceneGroup };
 
 interface ViewerOut {
     viewer: Viewer;
@@ -360,16 +329,10 @@ async function initializeViewerWebGL2(out: ViewerOut, canvas: HTMLCanvasElement)
             return InitErrorCode.NO_WEBGL2_GENERIC;
     }
 
-    // Test for no MS depthbuffer support (as seen in SwiftShader).
-    const samplesArray = gl.getInternalformatParameter(gl.RENDERBUFFER, gl.DEPTH32F_STENCIL8, gl.SAMPLES);
-    if (samplesArray === null || samplesArray.length === 0) {
-        const ext = gl.getExtension('WEBGL_debug_renderer_info');
-        console.warn(`samplesArray = ${samplesArray}`);
-        if (ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL).includes('SwiftShader'))
-            return InitErrorCode.GARBAGE_WEBGL2_SWIFTSHADER;
-        else
-            return InitErrorCode.GARBAGE_WEBGL2_GENERIC;
-    }
+    // SwiftShader is trash and I don't trust it.
+    const WEBGL_debug_renderer_info = gl.getExtension('WEBGL_debug_renderer_info');
+    if (WEBGL_debug_renderer_info && gl.getParameter(WEBGL_debug_renderer_info.UNMASKED_RENDERER_WEBGL).includes('SwiftShader'))
+        return InitErrorCode.GARBAGE_WEBGL2_SWIFTSHADER;
 
     const config = new GfxPlatformWebGL2Config();
     config.trackResources = IS_DEVELOPMENT;

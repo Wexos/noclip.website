@@ -1,11 +1,11 @@
 
-import { GfxRenderInstManager } from "../gfx/render/GfxRenderer";
+import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager";
 import { ViewerRenderInput } from "../viewer";
 import { mat4, vec3, vec4 } from "gl-matrix";
 import ArrayBufferSlice from "../ArrayBufferSlice";
 import { assertExists, nArray, arrayRemove, assert } from "../util";
 import { dKy_tevstr_c, dKy_tevstr_init } from "./d_kankyo";
-import { AABB, Frustum } from "../Geometry";
+import { AABB } from "../Geometry";
 import { computeScreenSpaceProjectionFromWorldSpaceAABB, computeScreenSpaceProjectionFromWorldSpaceSphere, ScreenSpaceProjection } from "../Camera";
 import { transformVec3Mat4w1 } from "../MathHelpers";
 
@@ -18,6 +18,7 @@ export const enum fpc__ProcessName {
     d_a_obj_ikada       = 0x0046,
     d_a_obj_lpalm       = 0x004B,
     d_a_obj_Ygush00     = 0x0099,
+    d_a_py_lk           = 0x00A9,
     d_a_majuu_flag      = 0x00AF,
     d_a_tori_flag       = 0x00B0,
     d_a_sie_flag        = 0x00B1,
@@ -466,7 +467,6 @@ export class fopScn extends process_node_class {
 //#region fopAc
 const scratchVec3a = vec3.create();
 const scratchAABB = new AABB();
-const scratchFrustum = new Frustum();
 const scratchScreenSpaceProjection = new ScreenSpaceProjection();
 export class fopAc_ac_c extends leafdraw_class {
     public pos = vec3.create();
@@ -561,16 +561,7 @@ export class fopAc_ac_c extends leafdraw_class {
         if (this.cullMtx === null)
             throw "whoops";
 
-        // Compute our view frustum. If we have a custom far distance, pull that in...
-        let frustum: Frustum; 
-        if (this.cullFarDistanceRatio < 1.0) {
-            scratchFrustum.copyViewFrustum(viewerInput.camera.frustum);
-            scratchFrustum.far *= this.cullFarDistanceRatio;
-            scratchFrustum.updateWorldFrustum(viewerInput.camera.worldMatrix);
-            frustum = scratchFrustum;
-        } else {
-            frustum = viewerInput.camera.frustum;
-        }
+        const frustum = viewerInput.camera.frustum;
 
         if (this.cullSizeBox !== null) {
             // If the box is empty, that means I forgot to fill it in for a certain actor.

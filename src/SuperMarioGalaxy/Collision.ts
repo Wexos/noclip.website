@@ -1,11 +1,11 @@
 
 import { vec3, mat4, ReadonlyVec3, ReadonlyMat4 } from "gl-matrix";
-import { SceneObjHolder, ResourceHolder, SceneObj } from "./Main";
+import { SceneObjHolder, SceneObj } from "./Main";
 import { NameObj, MovementType } from "./NameObj";
 import { KCollisionServer, CheckCollideResult, KC_PrismData, KCHitSphereClassification } from "./KCollisionServer";
 import { HitSensor } from "./HitSensor";
 import ArrayBufferSlice from "../ArrayBufferSlice";
-import { ZoneAndLayer, LiveActor, makeMtxTRSFromActor } from "./LiveActor";
+import { ZoneAndLayer, LiveActor, makeMtxTRSFromActor, ResourceHolder } from "./LiveActor";
 import { assertExists, nArray, assert, arrayRemoveIfExist } from "../util";
 import { transformVec3Mat4w1, transformVec3Mat4w0, isNearZero, isNearZeroVec3, getMatrixTranslation, Vec3Zero } from "../MathHelpers";
 import { connectToScene, vecKillElement } from "./ActorUtil";
@@ -1011,7 +1011,7 @@ export class Binder {
         if (this.exCollisionPartsValid)
             sceneObjHolder.collisionDirector.keepers[CollisionKeeperCategory.Map].addToGlobal(assertExists(this.exCollisionParts));
 
-        if (this.hostOffsetVec) {
+        if (this.hostOffsetVec !== null) {
             vec3.copy(scratchVec3c, this.hostOffsetVec);
 
             if (this.hostBaseMtx !== null && this.useHostBaseMtxWithOffsetVec)
